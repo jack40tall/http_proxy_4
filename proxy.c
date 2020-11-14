@@ -7,6 +7,8 @@
 #include <string.h>
 #include <sys/socket.h>
 #include <netdb.h>
+#include <pthread.h>
+#include "sbuf.h"
 
 /* Recommended max cache and object sizes */
 #define MAX_CACHE_SIZE 1049000
@@ -17,6 +19,10 @@
 #define HEADER_VALUE_MAX_SIZE 1024
 #define MAX_HEADERS 32
 #define HTTP_REQUEST_MAX_SIZE 8192
+
+// Thread Sizes
+#define NTHREADS  10
+#define SBUFSIZE  20
 
 typedef struct {
 	char name[HEADER_NAME_MAX_SIZE];
@@ -83,8 +89,6 @@ int parse_request(const char *request, char *method,
 	char url[128];
 	strcpy(url,strtok_r(NULL, spaceDelimiter, &req_ptr));  // obtains the URL - req_ptr helps the tokenizer continue from the last call
 
-	char url_cpy[128];
-
 	bool hasPort = false;
 	int num_cols = 0;
 
@@ -113,11 +117,10 @@ int parse_request(const char *request, char *method,
 		strcpy(port, "80");
 	}
 
-
-
     // Make sure there is a uri
     memcpy(uri, "/", 1);
-    if(url_ptr != NULL) {
+
+    if(*url_ptr != '\0') {
 	    strcpy(uri + 1,strtok_r(NULL, EOLdelimiter ,&url_ptr));
     }
 
@@ -154,7 +157,7 @@ char *get_header_value(const char *name, http_header *headers, int num_headers) 
 	return NULL;
 }
 
-int listenForClient(int argc, char *argv[], struct sockaddr_storage* peer_addr, socklen_t* peer_addr_len, bool* firstIteration) {
+int listenForClient(int argc, char *argv[], struct sockaddr_storage* peer_addr, socklen_t* peer_addr_len) {
 
     // Socket Variables
     struct addrinfo hints;
@@ -220,16 +223,10 @@ int listenForClient(int argc, char *argv[], struct sockaddr_storage* peer_addr, 
     return sfd;
  }
 
-ssize_t readAndParse_client(int sfd, char* request_buff, struct sockaddr_storage* peer_addr, socklen_t* peer_addr_len, char* method, char* hostname, char* port, char* uri, http_header *headers, int* numHeaders) {
+int readAndParse_client(int accept_fd, char* request_buff, char* method, char* hostname, char* port, char* uri, http_header *headers) {
     ssize_t nread = 0;
     ssize_t totalRead = 0;
-    *numHeaders = 0;
-
-    int accept_fd;
-	accept_fd = accept(sfd, (struct sockaddr *) peer_addr, peer_addr_len);
-	if (accept_fd < 0) {
-		perror("Could not accept");
-	}
+    int numHeaders = 0;
 
     // getnameinfo((struct sockaddr *) &peer_addr, peer_addr_len, client_hostname, MAXLINE, 
 	// 			client_port, MAXLINE, 0);
@@ -251,11 +248,11 @@ ssize_t readAndParse_client(int sfd, char* request_buff, struct sockaddr_storage
     request_buff[totalRead] = '\0';
 
     if (is_complete_request(request_buff)) {
-        *numHeaders = parse_request(request_buff, method, hostname, port, uri, headers);
+        numHeaders = parse_request(request_buff, method, hostname, port, uri, headers);
 
         // printf("request method: %s\n", method);
         // printf("request hostname: %s\n", hostname);
-        // printf("request port: %s\n", port);
+        // printf("request port: %s\n", por
         // printf("request host: %s\n", get_header_value("Host", headers, numHeaders));
         printf("request uri: %s\n", uri);
         // printf("\n");
@@ -264,7 +261,7 @@ ssize_t readAndParse_client(int sfd, char* request_buff, struct sockaddr_storage
 		printf("request is incomplete\n");
 		printf("\n");
 	}
-    return accept_fd;
+    return numHeaders;
 }
 
 int connectAndSendRequest_server(char* hostname, char* port, char* method, char* uri, http_header* headers, int numHeaders) {
@@ -274,10 +271,7 @@ int connectAndSendRequest_server(char* hostname, char* port, char* method, char*
     // Vars for communicating with Server
 	struct addrinfo hints;
 	struct addrinfo *result, *rp;
-	int sfd, s, j;
-	size_t len;
-	ssize_t nread;
-	char buf[BUF_SIZE];
+	int sfd, s;
 
 	/* Obtain address(es) matching host/port */
 
@@ -368,70 +362,60 @@ void readAndSendToClient(int sfd, int client_fd) {
 
 }
 
+void *thread(void *vargp);
+sbuf_t sbuf; /* Shared buffer of connected descriptors */
+
 int main(int argc, char *argv[])
 {
     // Socket Variables
 	struct sockaddr_storage peer_addr;
-    int s;
 	socklen_t peer_addr_len;
-	char request_buff[HTTP_REQUEST_MAX_SIZE];
-	char host[NI_MAXHOST], service[NI_MAXSERV];
-    bool firstIteration = true;
+    int* accept_fd;
+    
+    pthread_t tid; // Thread ID
+
+    //Listen for incoming connections
+    int sfd = listenForClient(argc, argv, &peer_addr, &peer_addr_len);
+
+    for(;;) {
+        accept_fd = malloc(sizeof(int));
+        *accept_fd = accept(sfd, (struct sockaddr *) &peer_addr, &peer_addr_len);
+        if (accept_fd < 0) {
+            perror("Could not accept");
+        }
+        
+        pthread_create(&tid, NULL, thread, accept_fd);// create thread
+
+    }
+}
+
+
+
+
+void *thread(void *vargp) {
+    // Socket Variables
+    char request_buff[HTTP_REQUEST_MAX_SIZE];
+	// char host[NI_MAXHOST], service[NI_MAXSERV];
 
     // Http Parser Variables
     char method[8];
 	char hostname[60];
 	char port[6];
 	char uri[60];
-    int numHeaders;
 	http_header headers[30];
 
-        //Listen for incoming connections
-        int sfd = listenForClient(argc, argv, &peer_addr, &peer_addr_len, &firstIteration);
 
 
-    for (;;) {
-        //Accept connection and Read and parse request from client
-        int client_fd = readAndParse_client(sfd, request_buff, &peer_addr, &peer_addr_len, method, hostname, port, uri, headers, &numHeaders);
+    int client_fd = *((int *)vargp);
+    pthread_detach(pthread_self());
+    free(vargp);
+    int numHeaders = readAndParse_client(client_fd, request_buff, method, hostname, port, uri, headers);
+    int server_fd = connectAndSendRequest_server(hostname, port, method, uri, headers, numHeaders); 
+    readAndSendToClient(server_fd, client_fd);
+    close(server_fd);
+    close(client_fd);
 
-        //Connect to web server and request
-        int server_fd = connectAndSendRequest_server(hostname, port, method, uri, headers, numHeaders);
-
-        //Read response and send to client
-        readAndSendToClient(server_fd, client_fd);
-
-        close(client_fd);
-    }
+    return NULL;
+}
 	
     
-
-
-
-	
-
-    //     sleep(2);
-
-    //     // send response to client
-	// 	if (nread == -1)
-	// 		continue;               /* Ignore failed request_buff */
-
-	// 	s = getnameinfo((struct sockaddr *) &peer_addr,
-	// 			peer_addr_len, host, NI_MAXHOST,
-	// 			service, NI_MAXSERV, NI_NUMERICSERV);
-
-	// 	if (s == 0)
-	// 	       printf("Received %zd bytes from %s:%s\n",
-	// 			       nread, host, service);
-	// 	else
-	// 	       fprintf(stderr, "getnameinfo: %s\n", gai_strerror(s));
-
-	// 	if (sendto(accept_fd, request_buff, nread, 0,
-	// 				(struct sockaddr *) &peer_addr,
-	// 				peer_addr_len) != nread)
-	// 		perror("Error sending response");
-	// }
-
-
-    // printf("%s", user_agent_hdr);
-    // return 0;
-}
