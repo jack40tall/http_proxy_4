@@ -21,7 +21,7 @@
 #define HTTP_REQUEST_MAX_SIZE 8192
 
 // Thread Sizes
-#define NTHREADS  10
+#define NTHREADS  12
 #define SBUFSIZE  20
 
 typedef struct {
@@ -237,7 +237,6 @@ int readAndParse_client(int accept_fd, char* request_buff, char* method, char* h
             perror("recve error: ");
             break;
         };
-        // printf("Read %zd bytes\n", nread);
         totalRead += nread;
         fflush(stdout);
         if(strstr(request_buff, "\r\n\r\n")) {
@@ -249,13 +248,7 @@ int readAndParse_client(int accept_fd, char* request_buff, char* method, char* h
 
     if (is_complete_request(request_buff)) {
         numHeaders = parse_request(request_buff, method, hostname, port, uri, headers);
-
-        // printf("request method: %s\n", method);
-        // printf("request hostname: %s\n", hostname);
-        // printf("request port: %s\n", por
-        // printf("request host: %s\n", get_header_value("Host", headers, numHeaders));
-        printf("request uri: %s\n", uri);
-        // printf("\n");
+		//continue
     }
     else {
 		printf("request is incomplete\n");
@@ -331,7 +324,6 @@ int connectAndSendRequest_server(char* hostname, char* port, char* method, char*
         }
     }
     size_t headerLength = sprintf(request_buff, "%s\r\n", request_buff);
-    // printf("request_buff to server:\n%s", request_buff);
 
 	size_t wbytes = 0;
 	size_t total_wbytes = 0;
@@ -339,7 +331,6 @@ int connectAndSendRequest_server(char* hostname, char* port, char* method, char*
 		wbytes = write(sfd, request_buff, headerLength);
 		total_wbytes += wbytes;
 	}
-	// printf("Sent %d bytes to the server\n", (int)total_wbytes);
 
     return sfd;
 }
@@ -354,7 +345,6 @@ void readAndSendToClient(int sfd, int client_fd) {
 			break;
 		}
        		totalRead += bytesRead;
-		// printf("Recieved %d bytes from the server\n", bytesRead);	
 	}
 
     // Send Response to Client
@@ -370,22 +360,24 @@ int main(int argc, char *argv[])
     // Socket Variables
 	struct sockaddr_storage peer_addr;
 	socklen_t peer_addr_len;
-    int* accept_fd;
+    int accept_fd;
     
+    int i;
     pthread_t tid; // Thread ID
 
-    //Listen for incoming connections
+    sbuf_init(&sbuf, SBUFSIZE);
+    for(i = 0; i < NTHREADS; i++) { // Create threads
+        pthread_create(&tid, NULL, thread, NULL);
+    }
+
     int sfd = listenForClient(argc, argv, &peer_addr, &peer_addr_len);
 
     for(;;) {
-        accept_fd = malloc(sizeof(int));
-        *accept_fd = accept(sfd, (struct sockaddr *) &peer_addr, &peer_addr_len);
+        accept_fd = accept(sfd, (struct sockaddr *) &peer_addr, &peer_addr_len);
         if (accept_fd < 0) {
             perror("Could not accept");
         }
-        
-        pthread_create(&tid, NULL, thread, accept_fd);// create thread
-
+        sbuf_insert(&sbuf, accept_fd);
     }
 }
 
@@ -395,7 +387,6 @@ int main(int argc, char *argv[])
 void *thread(void *vargp) {
     // Socket Variables
     char request_buff[HTTP_REQUEST_MAX_SIZE];
-	// char host[NI_MAXHOST], service[NI_MAXSERV];
 
     // Http Parser Variables
     char method[8];
@@ -404,18 +395,16 @@ void *thread(void *vargp) {
 	char uri[60];
 	http_header headers[30];
 
-
-
-    int client_fd = *((int *)vargp);
     pthread_detach(pthread_self());
-    free(vargp);
-    int numHeaders = readAndParse_client(client_fd, request_buff, method, hostname, port, uri, headers);
-    int server_fd = connectAndSendRequest_server(hostname, port, method, uri, headers, numHeaders); 
-    readAndSendToClient(server_fd, client_fd);
-    close(server_fd);
-    close(client_fd);
 
-    return NULL;
+    for(;;) {
+        int client_fd = sbuf_remove(&sbuf);
+        int numHeaders = readAndParse_client(client_fd, request_buff, method, hostname, port, uri, headers);
+        int server_fd = connectAndSendRequest_server(hostname, port, method, uri, headers, numHeaders); 
+        readAndSendToClient(server_fd, client_fd);
+        close(server_fd);
+        close(client_fd);
+    }
 }
 	
     
