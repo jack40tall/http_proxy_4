@@ -1,4 +1,5 @@
 #include <arpa/inet.h>
+#include <signal.h>
 #include <sys/types.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -32,7 +33,35 @@ typedef struct {
 
 /* You won't lose style points for including this long line in your code */
 static const char *user_agent_hdr = "User-Agent: Mozilla/5.0 (X11; Linux x86_64; rv:10.0.3) Gecko/20120305 Firefox/10.0.3\r\n";
+sbuf_t sbuf; /* Shared buffer of connected descriptors */
 
+pthread_t tid[NTHREADS];
+
+void *thread(void *vargp);
+
+void cleanup() {
+	sbuf_deinit(&sbuf);
+	printf("In Cleanup\n");
+	fflush(stdout);
+
+	for(int i = 0; i < NTHREADS; i++) {
+		if(pthread_cancel(tid[i]) != 0){
+			fprintf(stderr, "pthread create failed\n");
+		}
+	}
+	for(int i = 0; i < NTHREADS; i++) {
+		if(pthread_join(tid[i], NULL) != 0) {
+			fprintf(stderr, "pthread create failed\n");
+		}
+	}
+}
+
+void sigint_handler(int sig) {
+	cleanup();
+}
+void sigterm_handler(int sig) {
+	cleanup();
+}
 
 /* Input: request, a string
  * Output: 1 if request is a complete HTTP request, 0 otherwise
@@ -352,8 +381,7 @@ void readAndSendToClient(int sfd, int client_fd) {
 
 }
 
-void *thread(void *vargp);
-sbuf_t sbuf; /* Shared buffer of connected descriptors */
+
 
 int main(int argc, char *argv[])
 {
@@ -363,11 +391,16 @@ int main(int argc, char *argv[])
     int accept_fd;
     
     int i;
-    pthread_t tid; // Thread ID
+    pthread_t currtid; // Thread ID
+
+	signal(SIGINT, sigint_handler);
+	signal(SIGSTOP, sigterm_handler);
+	signal(SIGKILL, sigterm_handler);
 
     sbuf_init(&sbuf, SBUFSIZE);
     for(i = 0; i < NTHREADS; i++) { // Create threads
-        pthread_create(&tid, NULL, thread, NULL);
+        pthread_create(&currtid, NULL, thread, NULL);
+		tid[i] = currtid;
     }
 
     int sfd = listenForClient(argc, argv, &peer_addr, &peer_addr_len);
@@ -394,8 +427,6 @@ void *thread(void *vargp) {
 	char port[6];
 	char uri[60];
 	http_header headers[30];
-
-    pthread_detach(pthread_self());
 
     for(;;) {
         int client_fd = sbuf_remove(&sbuf);
