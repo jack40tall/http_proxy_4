@@ -1,7 +1,22 @@
 # HTTP Proxy Lab
 
-## Overview
-This is a HTTP proxy built in C, that is able to both local and global requests. 
+## Usage
+This is a multi-threaded, threadpool implemented HTTP proxy built in C, that is able to handle both local and global requests. To use the Proxy, start the Tiny server in one terminal window:
+```
+./tiny <portnumber>
+```
+Then start the proxy in another tab using a different port: 
+```
+./proxy <portnumber>
+```
+Finally use the proxy to fetch data with curl:
+```
+curl -v --proxy http://localhost:<proxyportnumber>/ http://localhost:<tinyportnumber>/
+```
+Alternatively, you can curl directly from websites, not having to start up the tiny server at all:
+```
+curl -v --proxy http://localhost:<proxyportnumber> http://google.com/
+```
 
 ## Makefile
     This is the makefile that builds the proxy program.  Type "make"
